@@ -1,0 +1,182 @@
+name: Next UI CI
+#
+on:
+  push:
+    branches: [development, staging, production]
+
+jobs:
+  build-and-push:
+    name: Build and Push to ECR & EKS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          token: ${{secrets.PAT}}
+
+      - name: Set up repository name
+        uses: noliran/branch-based-secrets@v1
+        with:
+          secrets: REPOSITORY
+
+      - name: Automatic Tagging of Releases
+        id: increment-git-tag
+        run: |
+          bash ./build/git_update.sh -v patch ${{secrets[env.REPOSITORY_NAME]}}
+          echo ::set-output name=exit_code::$?
+          echo "Exited with $?"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20' # or whatever Node version your Next.js app uses
+
+      - name: Install Dependencies
+        run: |
+          npm install --force
+
+      - name: Build Next.js Application
+        run: |
+          npm run build
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v2.0
+        with:
+          version: 'v1.24.0'
+        id: install
+
+      - name: Set up access secret file
+        uses: noliran/branch-based-secrets@v1
+        with:
+          secrets: AWS_ACCESS_KEY
+
+      - name: Set up secret key file
+        uses: noliran/branch-based-secrets@v1
+        with:
+          secrets: AWS_SECRET_KEY
+
+      - name: Set up cluster name
+        uses: noliran/branch-based-secrets@v1
+        with:
+          secrets: CLUSTER
+
+      - name: Set up region name
+        uses: noliran/branch-based-secrets@v1
+        with:
+          secrets: REGION
+
+      - name: Set up kubernets service name
+        uses: noliran/branch-based-secrets@v1
+        with:
+          secrets: KUBERNETES_SERVICE
+
+      - name: Set up kubernets depolyment name
+        uses: noliran/branch-based-secrets@v1
+        with:
+          secrets: KUBERNETES_DEPLOYMENT
+
+      - name: Set up NAMESPACE
+        uses: noliran/branch-based-secrets@v1
+        with:
+          secrets: NAMESPACE
+
+      - name: Set up HOST NAME
+        uses: noliran/branch-based-secrets@v1
+        with:
+          secrets: HOST_NAME
+
+      - name: Set up SSL CERT
+        uses: noliran/branch-based-secrets@v1
+        with:
+          secrets: SSL_CERT
+
+      - name: Set up REPOSITORY  
+        uses: noliran/branch-based-secrets@v1
+        with:
+          secrets: REPOSITORY    
+
+      - name: Set up AUTH_SECRET
+        uses: noliran/branch-based-secrets@v1
+        with:
+          secrets: AUTH_SECRET
+
+      - name: Set up AUTH_KEYCLOAK_ID
+        uses: noliran/branch-based-secrets@v1
+        with:
+          secrets: AUTH_KEYCLOAK_ID    
+
+      - name: Set up AUTH_KEYCLOAK_SECRET
+        uses: noliran/branch-based-secrets@v1
+        with:
+          secrets: AUTH_KEYCLOAK_SECRET
+          
+      - name: Set up AUTH_KEYCLOAK_ISSUER name
+        uses: noliran/branch-based-secrets@v1
+        with:
+          secrets: AUTH_KEYCLOAK_ISSUER
+
+      - name: Set up NEXTAUTH_URL name
+        uses: noliran/branch-based-secrets@v1
+        with:
+          secrets: NEXTAUTH_URL
+
+      - name: Set up REMOTE_API name
+        uses: noliran/branch-based-secrets@v1
+        with:
+          secrets: REMOTE_API    
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets[env.AWS_ACCESS_KEY_NAME] }}
+          aws-secret-access-key: ${{ secrets[env.AWS_SECRET_KEY_NAME] }}
+          aws-region: ${{ secrets[env.REGION_NAME] }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build Docker Image for Next.js
+        id: build-image
+        env:
+          IMAGE_URI: ${{ steps.login-ecr.outputs.registry }}/${{ secrets[env.KUBERNETES_SERVICE_NAME] }}:${{ steps.increment-git-tag.outputs.git-tag }}
+        run: |
+
+          # Build the Docker image
+          # docker build -t $IMAGE_URI .
+
+          docker build -t $IMAGE_URI .
+
+          # Push the Docker image to ECR
+          docker push $IMAGE_URI
+          echo "Pushed image to ECR at $IMAGE_URI"
+
+      - name: Setup Env Variables
+        uses: nowactions/envsubst@v1
+        with:
+          input: git-deployment.yaml.tmpl
+          output: git-deployment.yaml
+        env:
+          IMAGE_URI: ${{ steps.login-ecr.outputs.registry }}/${{ secrets[env.KUBERNETES_SERVICE_NAME] }}:${{ steps.increment-git-tag.outputs.git-tag }}
+          KUBERNETES_SERVICE: ${{ secrets[env.KUBERNETES_SERVICE_NAME] }}
+          KUBERNETES_DEPLOYMENT: ${{ secrets[env.KUBERNETES_DEPLOYMENT_NAME] }}
+          REPOSITORY: ${{ secrets[env.REPOSITORY_NAME] }}
+          NAMESPACE: ${{ secrets[env.NAMESPACE_NAME] }}
+          HOST_NAME: ${{ secrets[env.HOST_NAME_NAME] }}
+          SSL_CERT: ${{ secrets[env.SSL_CERT_NAME] }}
+          AUTH_SECRET: ${{ secrets[env.AUTH_SECRET_NAME] }}
+          AUTH_KEYCLOAK_ID: ${{ secrets[env.AUTH_KEYCLOAK_ID_NAME] }}
+          AUTH_KEYCLOAK_SECRET: ${{ secrets[env.AUTH_KEYCLOAK_SECRET_NAME] }}
+          AUTH_KEYCLOAK_ISSUER: ${{ secrets[env.AUTH_KEYCLOAK_ISSUER_NAME] }}
+          NEXTAUTH_URL: ${{ secrets[env.NEXTAUTH_URL_NAME] }}
+          REMOTE_API: ${{ secrets[env.REMOTE_API_NAME] }}
+
+      - name: Deploy image to EKS
+        id: deploy-image
+        run: |
+          echo "Updating kube config..."
+          cat -n git-deployment.yaml
+          aws eks update-kubeconfig --name ${{secrets[env.CLUSTER_NAME]}} --region ${{secrets[env.REGION_NAME]}}
+          echo "Deploying image to EKS...".
+          kubectl apply -f git-deployment.yaml
